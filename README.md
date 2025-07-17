@@ -18,7 +18,7 @@
 - **Software**: GROMACS, AutoDock, MODELLER, Discovery Studio, UCSF Chimera, PyMOL  
 - **Techniques**: Molecular Docking, MD Simulation, MM-PBSA, Virtual Screening  
 - **Languages**: Python, R  
-- **NGS Tools**: FastQC, HISAT2, STAR, DESeq2, Seurat (learning)  
+- **NGS Tools**: FastQC, HISAT2, STAR, DESeq2 (learning)  
 - **Platforms**: Linux, RStudio, GitHub
 
 ---
