@@ -3,7 +3,7 @@
 
 ## Hi 👋, I'm Sana Begum  
 🎓 MSc in Bioinformatics | 🔬 Research Analyst at ERA Medical College, Lucknow  
-💻 Structural Bioinformatics | Molecular Docking | MD Simulation | MM-PBSA | ADMET
+💻 Structural Bioinformatics | Molecular Docking | MD Simulation | MM-PBSA | ADMET Screening
 
 ---
 
