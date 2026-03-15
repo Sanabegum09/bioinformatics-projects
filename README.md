@@ -1,6 +1,7 @@
-# 🧬 Bioinformatics Projects Portfolio
+# 🧬 Bioinformatics Projects 
 
-Welcome to my bioinformatics research and development portfolio! I am an MSc in Bioinformatics and Research Analyst at ERA Medical College, Lucknow, specializing in structural bioinformatics, molecular modeling, and genomic analysis.
+Welcome to my bioinformatics projects 
+! I am an MSc in Bioinformatics and Research Analyst at ERA Medical College, Lucknow, specializing in structural bioinformatics, molecular modeling, and genomic analysis.
 
 ## 👋 Hi, I'm Sana Begum
 
