@@ -35,7 +35,6 @@ I'm a bioinformatics researcher passionate about leveraging computational approa
 - ADMET profiling and drug-likeness prediction
 - Lipinski's Rule of Five assessment
 - Toxicity and bioavailability predictions
-- Scaffold analysis and lead optimization
 
 ### Genomics & Evolutionary Biology
 - **NGS Analysis**: Quality control, read mapping, variant calling, expression quantification
@@ -49,17 +48,15 @@ I'm a bioinformatics researcher passionate about leveraging computational approa
 ### Programming Languages
 - **Python** (NumPy, Pandas, Matplotlib, Seaborn, Biopython, Scikit-learn)
 - **R** (ggplot2, DESeq2, dplyr, tidyr)
-- **Bash** - Shell scripting for automation
-- **SQL** - Data querying and management
 
 ### Bioinformatics Software
-- **Structural**: PyMOL, GROMACS, AMBER, NAMD, AutoDock, MODELLER, Chimera
-- **Sequence**: BLAST, CLUSTALW, RAxML, MEGA, SeaView
+- **Structural**: PyMOL, GROMACS, AutoDock, MODELLER, Chimera, Discovery studio 
+- **Sequence**: BLAST, CLUSTALW,MEGA
 - **NGS**: FastQC, HISAT2, STAR, Samtools, BCFtools, GATK
 - **Analysis**: Discovery Studio, Chimera, VMD
 
 ### Databases & Resources
-- PDB (Protein Data Bank), UniProt, NCBI, DrugBank
+- PDB (Protein Data Bank), UniProt, NCBI, DrugBank, PubChem
 - AlphaFold, SWISS-MODEL
 - GitHub, Linux/HPC environments
 
@@ -203,12 +200,6 @@ I welcome collaborations in:
 ## 📈 GitHub Statistics
 
 ![Sana's GitHub Stats](https://github-readme-stats.vercel.app/api?username=Sanabegum09&show_icons=true&theme=default)
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
