@@ -1,0 +1,14 @@
+# Molecular Docking Pipeline — Python dependencies
+# pip install -r requirements.txt
+
+numpy>=1.24.0
+pandas>=2.0.0
+biopython>=1.81
+
+# AutoDock Vina must be installed separately:
+# https://github.com/ccsb-scripps/AutoDock-Vina/releases
+# Add to PATH after installation
+
+# Open Babel (obabel) must be installed separately:
+# Ubuntu: sudo apt-get install openbabel
+# macOS:  brew install open-babel
