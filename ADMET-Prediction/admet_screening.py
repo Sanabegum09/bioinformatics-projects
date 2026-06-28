@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ADMET Screening & Drug-Likeness Filter
-=======================================
+ADMET Analysis Workflow: pkCSM + SwissADME Integration
+=======================================================
 Author  : Sana Begum
 Role    : Research Analyst, Era's Lucknow Medical College & Hospital
 Email   : begumsana686@gmail.com
@@ -9,36 +9,61 @@ GitHub  : https://github.com/Sanabegum09
 
 Description
 -----------
-Computes key ADMET (Absorption, Distribution, Metabolism, Excretion, Toxicity)
-and drug-likeness properties for a compound library using RDKit. Applies
-Lipinski's Rule of Five, Veber's rules, PAINS filtering, and multiple
-drug-likeness indices. Outputs a ranked summary with pass/fail annotations
-for each compound.
+This workflow integrates ADMET predictions from two widely used web servers:
+  1. pkCSM  — https://biosig.lab.uq.edu.au/pkcsm/
+     Predicts: Absorption (Caco-2, HIA, P-gp), Distribution (BBB, PPB, VDss),
+               Metabolism (CYP inhibition/substrate), Excretion (renal OCT2),
+               Toxicity (AMES mutagenicity, hERG, hepatotoxicity, LD50, skin sensitisation)
 
-Typical usage after virtual screening: input the top docking hits to filter
-for drug-like candidates before experimental validation.
+  2. SwissADME — https://www.swissadme.ch/
+     Predicts: Physicochemical properties, Lipinski/Veber/Egan/Ghose rules,
+               Bioavailability radar, GI absorption, BBB permeant, P-gp substrate,
+               CYP inhibition (2C19, 2C9, 2D6, 3A4, 1A2), Water solubility (ESOL/Ali)
 
-Usage
------
-    python admet_screening.py --input hits.sdf --output admet_results/
+Usage in Computational Drug Discovery (Sana Begum's workflow)
+--------------------------------------------------------------
+  STEP 1: Run molecular docking (AutoDock Vina) → get top hits
+  STEP 2: Prepare SMILES → submit to pkCSM & SwissADME (batch)
+  STEP 3: Download CSV results from both servers
+  STEP 4: Run this script to parse, integrate, filter, and visualise
+
+Script Usage
+------------
+  python admet_pkcsm_swissadme.py \\
+      --pkcsm   pkcsm_results.csv \\
+      --swissadme swissadme_results.csv \\
+      --smiles  compounds.smi \\
+      --output  admet_integrated/ \\
+      --plot
+
+Prepare Input for Web Servers
+------------------------------
+  For pkCSM:
+      - Go to https://biosig.lab.uq.edu.au/pkcsm/prediction
+      - Select 'Batch' tab → paste SMILES (one per line, optionally with name)
+      - Download: 'Download results as CSV'
+
+  For SwissADME:
+      - Go to https://www.swissadme.ch/
+      - Paste SMILES list (one per line)
+      - Run → Export → 'Download results (CSV)'
 
 Requirements
 ------------
-    pip install rdkit pandas numpy matplotlib seaborn
+    pip install pandas numpy matplotlib seaborn rdkit
 
 References
 ----------
-    Lipinski CA et al. Adv Drug Deliv Rev. 2001;46(1-3):3-26.
-    Veber DF et al. J Med Chem. 2002;45(12):2615-23.
-    Egan WJ et al. J Med Chem. 2000;43(21):3867-77.
-    Ghose AK et al. J Comb Chem. 1999;1(1):55-68.
+    Pires DE et al. pkCSM: Predicting Small-Molecule Pharmacokinetic and
+    Toxicity Properties Using Graph-Based Signatures. J Med Chem. 2015;58(9):4066-72.
+    doi:10.1021/acs.jmedchem.5b00104
+
+    Daina A et al. SwissADME: a free web tool to evaluate pharmacokinetics,
+    drug-likeness and medicinal chemistry friendliness of small molecules.
+    Sci Rep. 2017;7:42717. doi:10.1038/srep42717
 """
 
-import os
-import sys
-import argparse
-import logging
-import warnings
+import os, sys, argparse, logging, warnings
 from pathlib import Path
 from datetime import datetime
 
@@ -47,426 +72,545 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
-
-# RDKit
-from rdkit import Chem
-from rdkit.Chem import Descriptors, rdMolDescriptors, Crippen, Lipinski, QED
-from rdkit.Chem import Draw, AllChem
-from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
-
 warnings.filterwarnings("ignore")
-logging.basicConfig(
-    level=logging.INFO,
+
+# Optional RDKit for SMILES prep utility
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Draw, Descriptors
+    RDKIT_AVAILABLE = True
+except ImportError:
+    RDKIT_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+    handlers=[logging.StreamHandler(sys.stdout)])
 log = logging.getLogger(__name__)
 
+# ── Colour scheme ────────────────────────────────────────────
+BLUE   = "#1A5276"
+RED    = "#C0392B"
+GREEN  = "#1E8449"
+ORANGE = "#CA6F1E"
+GREY   = "#ABB2B9"
 
-# ─────────────────────────────────────────────────────────────
-# PROPERTY CALCULATORS
-# ─────────────────────────────────────────────────────────────
 
-def compute_properties(mol) -> dict:
+# ════════════════════════════════════════════════════════════
+# STEP 0 — PREPARE INPUT FOR WEB SERVERS
+# ════════════════════════════════════════════════════════════
+
+def prepare_smiles_from_sdf(sdf_file: str, out_smi: str) -> pd.DataFrame:
     """
-    Compute a comprehensive set of molecular descriptors for drug-likeness.
+    Extract SMILES from an SDF file and save formatted input for pkCSM/SwissADME.
+
+    Parameters
+    ----------
+    sdf_file : str   Path to SDF file (e.g. top-20 docking hits)
+    out_smi  : str   Output SMILES file path
 
     Returns
     -------
-    dict : All computed properties
+    pd.DataFrame : Table of compound names and SMILES
     """
-    if mol is None:
-        return {}
-
-    mw    = Descriptors.ExactMolWt(mol)
-    logp  = Crippen.MolLogP(mol)
-    hbd   = rdMolDescriptors.CalcNumHBD(mol)    # H-bond donors
-    hba   = rdMolDescriptors.CalcNumHBA(mol)    # H-bond acceptors
-    psa   = rdMolDescriptors.CalcTPSA(mol)      # Topological polar surface area
-    nrb   = rdMolDescriptors.CalcNumRotatableBonds(mol)
-    rings = rdMolDescriptors.CalcNumRings(mol)
-    arom  = rdMolDescriptors.CalcNumAromaticRings(mol)
-    fc    = Chem.rdmolops.GetFormalCharge(mol)
-    nha   = mol.GetNumHeavyAtoms()
-    fsp3  = rdMolDescriptors.CalcFractionCSP3(mol)
-    mf    = rdMolDescriptors.CalcMolFormula(mol)
-
-    # QED — Quantitative Estimate of Drug-likeness (0–1, higher is better)
-    try:
-        qed_score = QED.qed(mol)
-    except Exception:
-        qed_score = None
-
-    # SAscore — Synthetic Accessibility (1 easy – 10 hard)
-    # Requires rdkit.Chem.Descriptors.rdMolDescriptors
-    try:
-        from rdkit.Chem import RDConfig
-        sys.path.append(os.path.join(RDConfig.RDContribDir, "SA_Score"))
-        import sascorer
-        sa_score = sascorer.calculateScore(mol)
-    except Exception:
-        sa_score = None   # SA Score contrib not always present
-
-    return {
-        "Molecular_Weight":     round(mw, 2),
-        "LogP":                 round(logp, 2),
-        "H_Bond_Donors":        hbd,
-        "H_Bond_Acceptors":     hba,
-        "TPSA_A2":              round(psa, 2),
-        "Rotatable_Bonds":      nrb,
-        "Num_Rings":            rings,
-        "Aromatic_Rings":       arom,
-        "Formal_Charge":        fc,
-        "Heavy_Atom_Count":     nha,
-        "Fraction_CSP3":        round(fsp3, 3),
-        "Molecular_Formula":    mf,
-        "QED":                  round(qed_score, 3) if qed_score is not None else None,
-        "SA_Score":             round(sa_score, 2) if sa_score is not None else None,
-    }
-
-
-# ─────────────────────────────────────────────────────────────
-# DRUG-LIKENESS RULES
-# ─────────────────────────────────────────────────────────────
-
-def lipinski_ro5(props: dict) -> tuple:
-    """
-    Lipinski's Rule of Five.
-    Pass = ≤1 violation (original Lipinski allows 1 violation).
-
-    Returns (pass: bool, violations: list)
-    """
-    violations = []
-    if props["Molecular_Weight"] > 500:
-        violations.append(f"MW={props['Molecular_Weight']} > 500")
-    if props["LogP"] > 5:
-        violations.append(f"LogP={props['LogP']} > 5")
-    if props["H_Bond_Donors"] > 5:
-        violations.append(f"HBD={props['H_Bond_Donors']} > 5")
-    if props["H_Bond_Acceptors"] > 10:
-        violations.append(f"HBA={props['H_Bond_Acceptors']} > 10")
-    return len(violations) <= 1, violations
-
-
-def veber_rules(props: dict) -> tuple:
-    """
-    Veber oral bioavailability rules.
-    Pass: TPSA ≤ 140 Å² AND Rotatable bonds ≤ 10.
-    """
-    violations = []
-    if props["TPSA_A2"] > 140:
-        violations.append(f"TPSA={props['TPSA_A2']} > 140")
-    if props["Rotatable_Bonds"] > 10:
-        violations.append(f"RotBonds={props['Rotatable_Bonds']} > 10")
-    return len(violations) == 0, violations
-
-
-def egan_rules(props: dict) -> tuple:
-    """
-    Egan's filter for passive intestinal absorption.
-    Pass: LogP ≤ 5.88 AND TPSA ≤ 131.6.
-    """
-    violations = []
-    if props["LogP"] > 5.88:
-        violations.append(f"LogP={props['LogP']} > 5.88")
-    if props["TPSA_A2"] > 131.6:
-        violations.append(f"TPSA={props['TPSA_A2']} > 131.6")
-    return len(violations) == 0, violations
-
-
-def ghose_filter(props: dict) -> tuple:
-    """
-    Ghose drug-likeness filter.
-    Pass: 160 ≤ MW ≤ 480, -0.4 ≤ LogP ≤ 5.6,
-          20 ≤ MR ≤ 130, 40 ≤ Heavy atoms ≤ 130.
-    """
-    violations = []
-    if not (160 <= props["Molecular_Weight"] <= 480):
-        violations.append(f"MW={props['Molecular_Weight']} not in [160,480]")
-    if not (-0.4 <= props["LogP"] <= 5.6):
-        violations.append(f"LogP={props['LogP']} not in [-0.4, 5.6]")
-    if not (20 <= props["Heavy_Atom_Count"] <= 70):
-        violations.append(f"HeavyAtoms={props['Heavy_Atom_Count']} not in [20,70]")
-    return len(violations) == 0, violations
-
-
-def leadlikeness_filter(props: dict) -> tuple:
-    """
-    Lead-like filter for fragment & lead-based drug discovery.
-    Pass: MW ≤ 350, LogP ≤ 3.5, Rotatable bonds ≤ 7.
-    """
-    violations = []
-    if props["Molecular_Weight"] > 350:
-        violations.append(f"MW={props['Molecular_Weight']} > 350")
-    if props["LogP"] > 3.5:
-        violations.append(f"LogP={props['LogP']} > 3.5")
-    if props["Rotatable_Bonds"] > 7:
-        violations.append(f"RotBonds={props['Rotatable_Bonds']} > 7")
-    return len(violations) == 0, violations
-
-
-def pains_filter(mol) -> tuple:
-    """
-    PAINS (Pan-Assay Interference Compounds) filter using RDKit FilterCatalog.
-
-    Returns (is_clean: bool, alerts: list)
-    """
-    params = FilterCatalogParams()
-    params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
-    catalog = FilterCatalog(params)
-    matches = list(catalog.GetMatches(mol))
-    alerts = [m.GetDescription() for m in matches]
-    return len(alerts) == 0, alerts
-
-
-def brenk_filter(mol) -> tuple:
-    """
-    Brenk unwanted chemical fragment filter.
-    """
-    params = FilterCatalogParams()
-    params.AddCatalog(FilterCatalogParams.FilterCatalogs.BRENK)
-    catalog = FilterCatalog(params)
-    matches = list(catalog.GetMatches(mol))
-    alerts = [m.GetDescription() for m in matches]
-    return len(alerts) == 0, alerts
-
-
-# ─────────────────────────────────────────────────────────────
-# ABSORPTION PREDICTION (Simple heuristic models)
-# ─────────────────────────────────────────────────────────────
-
-def predict_absorption(props: dict) -> dict:
-    """
-    Heuristic predictions for absorption properties.
-    Based on published cutoffs (not ML models — for ML use SwissADME or pkCSM API).
-    """
-    psa   = props["TPSA_A2"]
-    logp  = props["LogP"]
-    mw    = props["Molecular_Weight"]
-    nrb   = props["Rotatable_Bonds"]
-
-    # GI Absorption (simplified Veber/Clark model)
-    gi_absorption = "High" if (psa <= 140 and nrb <= 10) else "Low"
-
-    # BBB permeability (psa < 90, logp 1-3 preferred)
-    bbb = "Likely" if (psa < 90 and 1 <= logp <= 3) else "Unlikely"
-
-    # P-gp substrate (rough heuristic: high MW, high HBA)
-    pgp_sub = "Likely" if (mw > 400 and props["H_Bond_Acceptors"] > 4) else "Unlikely"
-
-    # Water solubility (very rough — ESOL needs full descriptor set)
-    if logp < 1 and mw < 300:
-        solubility = "High"
-    elif logp <= 3 and mw <= 500:
-        solubility = "Moderate"
-    else:
-        solubility = "Low"
-
-    return {
-        "GI_Absorption":    gi_absorption,
-        "BBB_Permeable":    bbb,
-        "Pgp_Substrate":    pgp_sub,
-        "Water_Solubility": solubility
-    }
-
-
-# ─────────────────────────────────────────────────────────────
-# TOXICITY FLAGS
-# ─────────────────────────────────────────────────────────────
-
-def flag_toxicity(props: dict, mol) -> dict:
-    """
-    Simple structural toxicity flags. For precise predictions use pkCSM or admetSAR.
-    """
-    smarts_alerts = {
-        "Nitro_group":        "[N+](=O)[O-]",
-        "Reactive_aldehyde":  "[CX3H1](=O)[#6]",
-        "Michael_acceptor":   "[CX2]#[NX1]",
-        "Quinone":            "O=C1C=CC(=O)C=C1",
-    }
-    flags = {}
-    for name, smarts in smarts_alerts.items():
-        pattern = Chem.MolFromSmarts(smarts)
-        if pattern and mol.HasSubstructMatch(pattern):
-            flags[name] = True
-        else:
-            flags[name] = False
-
-    # Log P toxicity risk (very high logP → membrane toxicity)
-    flags["High_LogP_Risk"] = props["LogP"] > 6
-
-    return flags
-
-
-# ─────────────────────────────────────────────────────────────
-# MAIN SCREENING FUNCTION
-# ─────────────────────────────────────────────────────────────
-
-def screen_compound(mol, name: str) -> dict:
-    """Screen a single molecule and return full ADMET profile."""
-    if mol is None:
-        return {"Compound": name, "Error": "Invalid molecule", "Overall_Pass": False}
-
-    props = compute_properties(mol)
-    if not props:
-        return {"Compound": name, "Error": "Property calculation failed", "Overall_Pass": False}
-
-    ro5_pass, ro5_viol      = lipinski_ro5(props)
-    veber_pass, veber_viol  = veber_rules(props)
-    egan_pass, egan_viol    = egan_rules(props)
-    ghose_pass, ghose_viol  = ghose_filter(props)
-    lead_pass, lead_viol    = leadlikeness_filter(props)
-    pains_pass, pains_alrt  = pains_filter(mol)
-    brenk_pass, brenk_alrt  = brenk_filter(mol)
-    absorption              = predict_absorption(props)
-    tox_flags               = flag_toxicity(props, mol)
-
-    # Overall pass: Lipinski pass + no PAINS alerts + TPSA/RB acceptable
-    overall_pass = ro5_pass and pains_pass and veber_pass
-
-    row = {"Compound": name}
-    row.update(props)
-    row["Lipinski_Ro5_Pass"]    = ro5_pass
-    row["Lipinski_Violations"]  = "; ".join(ro5_viol) if ro5_viol else "None"
-    row["Veber_Pass"]           = veber_pass
-    row["Egan_Pass"]            = egan_pass
-    row["Ghose_Pass"]           = ghose_pass
-    row["Lead_Like"]            = lead_pass
-    row["PAINS_Pass"]           = pains_pass
-    row["PAINS_Alerts"]         = "; ".join(pains_alrt) if pains_alrt else "None"
-    row["BRENK_Pass"]           = brenk_pass
-    row["BRENK_Alerts"]         = "; ".join(brenk_alrt) if brenk_alrt else "None"
-    row.update({f"Absorption_{k}": v for k, v in absorption.items()})
-    row.update({f"Tox_{k}": v for k, v in tox_flags.items()})
-    row["Overall_DrugLike_Pass"] = overall_pass
-
-    return row
-
-
-def run_admet_screening(input_file: str, output_dir: str) -> pd.DataFrame:
-    """Screen all compounds in an SDF file and save results."""
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Read molecules
-    if input_file.endswith(".sdf"):
-        suppl = Chem.SDMolSupplier(input_file, sanitize=True, removeHs=False)
-        mols  = [(mol.GetProp("_Name") if mol and mol.HasProp("_Name") else f"Compound_{i+1}", mol)
-                 for i, mol in enumerate(suppl)]
-    elif input_file.endswith(".smi") or input_file.endswith(".smiles"):
-        mols = []
-        with open(input_file) as fh:
-            for i, line in enumerate(fh):
-                parts = line.strip().split()
-                if not parts:
-                    continue
-                smiles = parts[0]
-                name   = parts[1] if len(parts) > 1 else f"Compound_{i+1}"
-                mol    = Chem.MolFromSmiles(smiles)
-                mols.append((name, mol))
-    else:
-        log.error("Input must be .sdf or .smi/.smiles")
+    if not RDKIT_AVAILABLE:
+        log.warning("RDKit not installed — install via: pip install rdkit")
         return pd.DataFrame()
 
-    log.info(f"Screening {len(mols)} compounds for ADMET properties...")
-    rows = [screen_compound(mol, name) for name, mol in mols]
+    suppl = Chem.SDMolSupplier(sdf_file, sanitize=True, removeHs=True)
+    records = []
+    for i, mol in enumerate(suppl):
+        if mol is None:
+            continue
+        name   = mol.GetProp("_Name") if mol.HasProp("_Name") else f"Compound_{i+1}"
+        smiles = Chem.MolToSmiles(mol)
+        mw     = round(Descriptors.MolWt(mol), 2)
+        records.append({"Compound": name, "SMILES": smiles, "MW": mw})
 
-    df = pd.DataFrame(rows)
-    df_sorted = df.sort_values("QED", ascending=False)
-
-    # Save CSVs
-    df_sorted.to_csv(os.path.join(output_dir, "admet_full_results.csv"), index=False)
-    passed = df_sorted[df_sorted["Overall_DrugLike_Pass"] == True]
-    passed.to_csv(os.path.join(output_dir, "admet_drug_like_hits.csv"), index=False)
-
-    log.info(f"Results: {len(passed)}/{len(df_sorted)} compounds passed drug-likeness filters.")
-    return df_sorted
+    df = pd.DataFrame(records)
+    with open(out_smi, "w") as fh:
+        for _, row in df.iterrows():
+            fh.write(f"{row['SMILES']} {row['Compound']}\n")
+    log.info(f"Prepared {len(df)} SMILES → {out_smi}")
+    log.info("Submit this file to pkCSM (batch) and SwissADME for ADMET analysis")
+    return df
 
 
-# ─────────────────────────────────────────────────────────────
-# VISUALIZATION
-# ─────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# STEP 1 — PARSE pkCSM RESULTS
+# ════════════════════════════════════════════════════════════
 
-def plot_chemical_space(df: pd.DataFrame, output_dir: str) -> None:
-    """Plot MW vs LogP chemical space coloured by drug-likeness."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+# pkCSM standard column map (their CSV headers)
+PKCSM_COLUMNS = {
+    # Absorption
+    "Caco2_Permeability":          "Caco2 permeability",      # log Papp (cm/s)  > -5.15 = good
+    "Intestinal_Absorption_HIA":   "Human Intestinal Absorption",  # % absorbed, >30% = good
+    "Pgp_Inhibitor":               "P-glycoprotein I inhibitor",
+    "Pgp_Substrate":               "P-glycoprotein II substrate",
+    # Distribution
+    "VDss":                        "VDss (human)",            # L/kg, 0.04–20 = drug-like
+    "BBB_Permeability":            "BBB permeability",        # log BB, >-1 = permeable
+    "CNS_Permeability":            "CNS permeability",        # log PS, >-2 = CNS active
+    "Plasma_Protein_Binding":      "Fraction unbound (human)",
+    # Metabolism
+    "CYP1A2_Inhibitor":            "CYP1A2 inhibitor",
+    "CYP2C19_Inhibitor":           "CYP2C19 inhibitor",
+    "CYP2C9_Inhibitor":            "CYP2C9 inhibitor",
+    "CYP2D6_Inhibitor":            "CYP2D6 inhibitor",
+    "CYP3A4_Inhibitor":            "CYP3A4 inhibitor",
+    "CYP2D6_Substrate":            "CYP2D6 substrate",
+    "CYP3A4_Substrate":            "CYP3A4 substrate",
+    # Excretion
+    "Renal_OCT2_Substrate":        "Renal OCT2 substrate",
+    "Total_Clearance":             "Total Clearance",         # log ml/min/kg
+    # Toxicity
+    "AMES_Mutagenicity":           "AMES toxicity",           # Binary
+    "Max_Tolerated_Dose":          "Max. tolerated dose (human)", # log mg/kg/day
+    "hERG_Blockade":               "hERG I inhibitor",        # Cardiac safety
+    "hERG_Blockade_II":            "hERG II inhibitor",
+    "Oral_Rat_Acute_Toxicity_LD50":"Oral Rat Acute Toxicity (LD50)", # mol/kg
+    "Oral_Rat_Chronic_Toxicity":   "Oral Rat Chronic Toxicity (LOAEL)",
+    "Hepatotoxicity":              "Hepatotoxicity",
+    "Skin_Sensitisation":          "Skin Sensitisation",
+    "T_Pyriformis_Toxicity":       "T. pyriformis toxicity",
+    "Minnow_Toxicity":             "Minnow toxicity",
+}
 
-    # MW vs LogP
-    colors = df["Overall_DrugLike_Pass"].map({True: "#1A5276", False: "#EC7063"})
-    sc = axes[0].scatter(df["Molecular_Weight"], df["LogP"],
-                          c=colors, alpha=0.7, edgecolors="white", linewidths=0.4, s=60)
-    axes[0].axhline(y=5, color="orange", linestyle="--", alpha=0.7, label="LogP=5")
-    axes[0].axvline(x=500, color="orange", linestyle="--", alpha=0.7, label="MW=500")
-    axes[0].set_xlabel("Molecular Weight (Da)", fontsize=11)
-    axes[0].set_ylabel("LogP", fontsize=11)
-    axes[0].set_title("Chemical Space: MW vs LogP", fontsize=12, fontweight="bold")
-    pass_patch = mpatches.Patch(color="#1A5276", label="Drug-like (Pass)")
-    fail_patch = mpatches.Patch(color="#EC7063", label="Not drug-like (Fail)")
-    axes[0].legend(handles=[pass_patch, fail_patch], fontsize=9)
+def parse_pkcsm(csv_path: str) -> pd.DataFrame:
+    """
+    Parse pkCSM batch prediction CSV output.
 
-    # TPSA distribution
-    axes[1].hist(df["TPSA_A2"].dropna(), bins=20, color="#1A5276", alpha=0.8, edgecolor="white")
-    axes[1].axvline(x=140, color="red", linestyle="--", label="TPSA=140 (cutoff)")
-    axes[1].set_xlabel("TPSA (Å²)", fontsize=11)
-    axes[1].set_ylabel("Count", fontsize=11)
-    axes[1].set_title("TPSA Distribution", fontsize=12, fontweight="bold")
-    axes[1].legend(fontsize=9)
+    The CSV is downloaded directly from https://biosig.lab.uq.edu.au/pkcsm/prediction
+    after batch submission.
+    """
+    df = pd.read_csv(csv_path)
+    log.info(f"pkCSM: loaded {len(df)} compounds, {len(df.columns)} properties")
 
+    # Standardise compound name column
+    name_col = next((c for c in df.columns if "name" in c.lower() or "compound" in c.lower()
+                     or "smiles" in c.lower()), df.columns[0])
+    df = df.rename(columns={name_col: "Compound"})
+
+    # Rename known columns
+    reverse_map = {v: k for k, v in PKCSM_COLUMNS.items()}
+    df = df.rename(columns={c: reverse_map.get(c, c) for c in df.columns})
+
+    df["Source"] = "pkCSM"
+    return df
+
+
+# ════════════════════════════════════════════════════════════
+# STEP 2 — PARSE SwissADME RESULTS
+# ════════════════════════════════════════════════════════════
+
+# SwissADME standard column map
+SWISSADME_COLUMNS = {
+    "SMILES":                    "SMILES",
+    "MW":                        "Molecular weight",
+    "LogP_SwissADME":            "Log Po/w (iLOGP)",       # or XLOGP3 or WLOGP
+    "HBD":                       "H-bond donors",
+    "HBA":                       "H-bond acceptors",
+    "TPSA":                      "Topological Polar Surface Area (TPSA)",
+    "Rotatable_Bonds":           "Rotatable bonds",
+    "Lipinski_Pass":             "Lipinski #violations",    # 0 = pass
+    "Veber_Pass":                "Veber #violations",
+    "GI_Absorption":             "GI absorption",           # High / Low
+    "BBB_Permeant":              "BBB permeant",            # Yes/No
+    "Pgp_Substrate_Swiss":       "P-gp substrate",
+    "CYP1A2_Inhibitor_Swiss":    "CYP1A2 inhibitor",
+    "CYP2C19_Inhibitor_Swiss":   "CYP2C19 inhibitor",
+    "CYP2C9_Inhibitor_Swiss":    "CYP2C9 inhibitor",
+    "CYP2D6_Inhibitor_Swiss":    "CYP2D6 inhibitor",
+    "CYP3A4_Inhibitor_Swiss":    "CYP3A4 inhibitor",
+    "Water_Solubility_ESOL":     "Water solubility (ESOL)",  # log mol/L
+    "Water_Solubility_Class":    "Water solubility class",   # Soluble/Insoluble
+    "Bioavailability_Score":     "Bioavailability Score",    # 0.17, 0.55, 0.85
+    "Drug_Likeness":             "Drug-likeness",
+    "Medicinal_Chemistry":       "Medicinal Chemistry",
+    "PAINS_Alerts_Swiss":        "PAINS alerts",
+    "Brenk_Alerts_Swiss":        "Brenk alerts",
+    "LeadLikeness_Swiss":        "Lead-likeness",
+}
+
+def parse_swissadme(csv_path: str) -> pd.DataFrame:
+    """
+    Parse SwissADME CSV output.
+
+    Downloaded from http://www.swissadme.ch/ after batch run → Export CSV.
+    """
+    df = pd.read_csv(csv_path)
+    log.info(f"SwissADME: loaded {len(df)} compounds, {len(df.columns)} properties")
+
+    # Standardise compound identifier
+    name_col = next((c for c in df.columns if "name" in c.lower() or
+                     "compound" in c.lower() or "id" in c.lower()), df.columns[0])
+    df = df.rename(columns={name_col: "Compound"})
+
+    reverse_map = {v: k for k, v in SWISSADME_COLUMNS.items()}
+    df = df.rename(columns={c: reverse_map.get(c, c) for c in df.columns})
+
+    # Convert Lipinski violations: 0 violations = Pass
+    if "Lipinski_Pass" in df.columns:
+        df["Lipinski_Pass"] = df["Lipinski_Pass"].apply(
+            lambda x: "Pass" if str(x).strip() in ("0", "0.0", "0 violation") else "Fail"
+        )
+
+    df["Source"] = "SwissADME"
+    return df
+
+
+# ════════════════════════════════════════════════════════════
+# STEP 3 — INTEGRATE & FILTER
+# ════════════════════════════════════════════════════════════
+
+def integrate_admet(pkcsm_df: pd.DataFrame, swiss_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge pkCSM and SwissADME results on compound name.
+
+    Returns a single integrated DataFrame with key properties from both servers.
+    """
+    # Select key pkCSM columns (those that actually exist)
+    pkcsm_keep = ["Compound",
+                  "Caco2_Permeability", "Intestinal_Absorption_HIA",
+                  "Pgp_Substrate", "BBB_Permeability", "VDss",
+                  "CYP1A2_Inhibitor", "CYP2C9_Inhibitor", "CYP2C19_Inhibitor",
+                  "CYP2D6_Inhibitor", "CYP3A4_Inhibitor",
+                  "AMES_Mutagenicity", "hERG_Blockade", "hERG_Blockade_II",
+                  "Hepatotoxicity", "Skin_Sensitisation",
+                  "Oral_Rat_Acute_Toxicity_LD50", "Max_Tolerated_Dose"]
+    pkcsm_keep = [c for c in pkcsm_keep if c in pkcsm_df.columns]
+
+    # Select key SwissADME columns
+    swiss_keep = ["Compound",
+                  "MW", "LogP_SwissADME", "HBD", "HBA", "TPSA", "Rotatable_Bonds",
+                  "Lipinski_Pass", "GI_Absorption", "BBB_Permeant",
+                  "CYP2D6_Inhibitor_Swiss", "CYP3A4_Inhibitor_Swiss",
+                  "Water_Solubility_ESOL", "Water_Solubility_Class",
+                  "Bioavailability_Score", "PAINS_Alerts_Swiss",
+                  "Drug_Likeness", "LeadLikeness_Swiss"]
+    swiss_keep = [c for c in swiss_keep if c in swiss_df.columns]
+
+    merged = pd.merge(
+        pkcsm_df[pkcsm_keep],
+        swiss_df[swiss_keep],
+        on="Compound", how="outer", suffixes=("_pkcsm", "_swiss")
+    )
+    log.info(f"Integrated: {len(merged)} compounds with combined ADMET properties")
+    return merged
+
+
+def apply_drug_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply standard drug-likeness and safety filters using both pkCSM and SwissADME data.
+
+    Filter criteria (drug-like profile):
+      ✓  Lipinski Ro5 = Pass (SwissADME)
+      ✓  GI Absorption = High (SwissADME)
+      ✓  AMES mutagenicity = Non-mutagen (pkCSM)
+      ✓  hERG blockade I = Non-inhibitor (pkCSM)  [cardiac safety]
+      ✓  Hepatotoxicity = Non-hepatotoxic (pkCSM)
+      ✓  PAINS alerts = 0 (SwissADME)
+    """
+    df = df.copy()
+    filters = {}
+
+    if "Lipinski_Pass" in df.columns:
+        filters["F1_Lipinski"] = df["Lipinski_Pass"].astype(str).str.lower().isin(["pass", "yes", "true"])
+
+    if "GI_Absorption" in df.columns:
+        filters["F2_GI_Absorption"] = df["GI_Absorption"].astype(str).str.lower().isin(["high"])
+
+    if "AMES_Mutagenicity" in df.columns:
+        filters["F3_AMES_Safe"] = df["AMES_Mutagenicity"].astype(str).str.lower().isin(
+            ["no", "non-mutagen", "false", "0"])
+
+    if "hERG_Blockade" in df.columns:
+        filters["F4_hERG_Safe"] = df["hERG_Blockade"].astype(str).str.lower().isin(
+            ["no", "non-inhibitor", "false", "0"])
+
+    if "Hepatotoxicity" in df.columns:
+        filters["F5_Liver_Safe"] = df["Hepatotoxicity"].astype(str).str.lower().isin(
+            ["no", "non-hepatotoxic", "false", "0"])
+
+    if "PAINS_Alerts_Swiss" in df.columns:
+        filters["F6_PAINS_Clean"] = df["PAINS_Alerts_Swiss"].astype(str).isin(["0", "0.0"])
+
+    for name, mask in filters.items():
+        df[name] = mask
+
+    if filters:
+        all_pass = pd.DataFrame(filters).all(axis=1)
+        df["Overall_Pass"] = all_pass
+        df["Filters_Passed"] = pd.DataFrame(filters).sum(axis=1).astype(str) + "/" + str(len(filters))
+    else:
+        df["Overall_Pass"] = True
+        df["Filters_Passed"] = "N/A"
+
+    log.info(f"Filter results: {df['Overall_Pass'].sum()}/{len(df)} compounds passed all filters")
+    return df
+
+
+# ════════════════════════════════════════════════════════════
+# STEP 4 — VISUALISATION (publication-quality)
+# ════════════════════════════════════════════════════════════
+
+def plot_bioavailability_radar(df: pd.DataFrame, output_dir: str) -> None:
+    """
+    Bioavailability radar chart for top 5 compounds (SwissADME-style).
+    Properties: MW≤500, LogP≤5, HBD≤5, HBA≤10, TPSA≤140, RotBonds≤10
+    Normalised 0–1 for radar display.
+    """
+    props = ["MW", "LogP_SwissADME", "HBD", "HBA", "TPSA", "Rotatable_Bonds"]
+    labels = ["MW\n(≤500)", "LogP\n(≤5)", "HBD\n(≤5)", "HBA\n(≤10)", "TPSA\n(≤140)", "RotBonds\n(≤10)"]
+    limits = [500, 5, 5, 10, 140, 10]
+
+    df_plot = df[[c for c in props if c in df.columns]].dropna()
+    if df_plot.empty:
+        log.warning("No data available for radar plot (check column names match SwissADME output)")
+        return
+
+    top5 = df_plot.head(5)
+    N = len([c for c in props if c in df.columns])
+    if N < 3:
+        return
+
+    available_props = [p for p in props if p in df.columns]
+    available_labels = [labels[i] for i, p in enumerate(props) if p in df.columns]
+    available_limits = [limits[i] for i, p in enumerate(props) if p in df.columns]
+
+    angles = np.linspace(0, 2*np.pi, len(available_props), endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig, axes = plt.subplots(1, min(5, len(top5)), figsize=(4*min(5, len(top5)), 4),
+                              subplot_kw=dict(polar=True))
+    if len(top5) == 1:
+        axes = [axes]
+
+    colors = [BLUE, RED, GREEN, ORANGE, "#8E44AD"]
+    for i, (idx, row) in enumerate(top5.iterrows()):
+        ax   = axes[i]
+        vals = [row[p]/lim for p, lim in zip(available_props, available_limits)]
+        vals += vals[:1]
+        ax.plot(angles, vals, color=colors[i], linewidth=2)
+        ax.fill(angles, vals, color=colors[i], alpha=0.2)
+        ax.set_thetagrids(np.degrees(angles[:-1]), available_labels, fontsize=8)
+        ax.set_ylim(0, 1.2)
+        ax.axhline(y=1.0, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+        compound_name = df.iloc[idx]["Compound"] if "Compound" in df.columns else f"Cpd {i+1}"
+        ax.set_title(str(compound_name)[:15], fontsize=9, fontweight="bold", pad=15, color=BLUE)
+
+    plt.suptitle("Bioavailability Radar — Top Compounds\n(Red dashed = drug-like boundary)",
+                 fontsize=11, fontweight="bold", y=1.02)
     plt.tight_layout()
-    out = os.path.join(output_dir, "chemical_space.png")
-    plt.savefig(out, dpi=150, bbox_inches="tight")
+    out = os.path.join(output_dir, "bioavailability_radar.png")
+    plt.savefig(out, dpi=200, bbox_inches="tight")
     plt.close()
-    log.info(f"Chemical space plot saved: {out}")
+    log.info(f"Radar chart saved: {out}")
 
 
-def plot_qed_distribution(df: pd.DataFrame, output_dir: str) -> None:
-    """Plot QED score distribution."""
+def plot_admet_heatmap(df: pd.DataFrame, output_dir: str) -> None:
+    """
+    Categorical heatmap of ADMET pass/fail properties across all compounds.
+    Green = Pass/Safe · Red = Fail/Unsafe · Grey = N/A
+    """
+    binary_cols = {
+        "Lipinski_Pass":      "Lipinski Ro5",
+        "GI_Absorption":      "GI Absorption (High)",
+        "BBB_Permeant":       "BBB Permeant",
+        "AMES_Mutagenicity":  "AMES Safe ✓",
+        "hERG_Blockade":      "hERG Safe ✓",
+        "Hepatotoxicity":     "Liver Safe ✓",
+        "Skin_Sensitisation": "Skin Safe ✓",
+        "Pgp_Substrate":      "P-gp Substrate",
+        "CYP3A4_Inhibitor":   "CYP3A4 Inhibitor",
+        "CYP2D6_Inhibitor":   "CYP2D6 Inhibitor",
+    }
+    available = {v: k for k, v in binary_cols.items() if k in df.columns}
+    if not available:
+        log.warning("No binary columns found for heatmap — check that pkCSM/SwissADME CSVs are correctly parsed")
+        return
+
+    safe_positive = {"Lipinski Ro5", "GI Absorption (High)", "BBB Permeant"}
+    safe_negative  = {"AMES Safe ✓", "hERG Safe ✓", "Liver Safe ✓", "Skin Safe ✓"}
+
+    def encode(col_name, series):
+        """1=green (safe/pass), 0=red (fail/unsafe), 0.5=grey (unknown)"""
+        result = []
+        for v in series:
+            s = str(v).strip().lower()
+            if col_name in safe_negative:
+                # For these, "No/False/0" means safe
+                result.append(1 if s in ("no","non-inhibitor","non-mutagen","non-hepatotoxic",
+                                          "non-sensitizer","false","0","0.0") else 0)
+            else:
+                result.append(1 if s in ("yes","pass","high","true","1","1.0") else 0)
+        return result
+
+    matrix_data = {}
+    for label, col in available.items():
+        matrix_data[label] = encode(label, df[col])
+
+    matrix = pd.DataFrame(matrix_data, index=df["Compound"] if "Compound" in df.columns else range(len(df)))
+    matrix = matrix.head(20)  # max 20 compounds for readability
+
+    fig, ax = plt.subplots(figsize=(max(8, len(matrix.columns)*1.2), max(5, len(matrix)*0.45)))
+    cmap = plt.cm.colors.LinearSegmentedColormap.from_list("admet", [RED, ORANGE, GREEN], N=2)
+    sns.heatmap(matrix, ax=ax, cmap=cmap, vmin=0, vmax=1,
+                linewidths=0.5, linecolor="white",
+                cbar_kws={"ticks": [0.25, 0.75], "label": ""},
+                annot=False)
+    cbar = ax.collections[0].colorbar
+    cbar.set_ticklabels(["Fail / Unsafe", "Pass / Safe"])
+    ax.set_xlabel("", fontsize=11)
+    ax.set_ylabel("Compound", fontsize=11)
+    ax.set_title("Integrated ADMET Profile — pkCSM + SwissADME\n(Author: Sana Begum)",
+                 fontsize=12, fontweight="bold", color=BLUE)
+    plt.xticks(rotation=35, ha="right", fontsize=9)
+    plt.yticks(rotation=0, fontsize=9)
+    plt.tight_layout()
+    out = os.path.join(output_dir, "admet_heatmap.png")
+    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close()
+    log.info(f"ADMET heatmap saved: {out}")
+
+
+def plot_toxicity_summary(df: pd.DataFrame, output_dir: str) -> None:
+    """Bar chart showing percentage of compounds passing each safety filter."""
+    tox_cols = {
+        "AMES_Mutagenicity":  "AMES Non-mutagenic",
+        "hERG_Blockade":      "hERG Non-blocker",
+        "Hepatotoxicity":     "Non-hepatotoxic",
+        "Skin_Sensitisation": "Non-sensitiser",
+    }
+    available = {k: v for k, v in tox_cols.items() if k in df.columns}
+    if not available:
+        return
+
+    rates = {}
+    for col, label in available.items():
+        safe = df[col].astype(str).str.lower().isin(["no","false","0","0.0",
+            "non-inhibitor","non-mutagen","non-hepatotoxic","non-sensitizer"])
+        rates[label] = round(100 * safe.sum() / len(df), 1)
+
     fig, ax = plt.subplots(figsize=(8, 4))
-    df_valid = df["QED"].dropna()
-    ax.hist(df_valid, bins=20, color="#1A5276", alpha=0.85, edgecolor="white")
-    ax.axvline(x=0.5, color="red", linestyle="--", label="QED=0.5 (recommended threshold)")
-    ax.set_xlabel("QED Score (Quantitative Estimate of Drug-likeness)", fontsize=11)
-    ax.set_ylabel("Number of Compounds", fontsize=11)
-    ax.set_title("QED Score Distribution", fontsize=12, fontweight="bold")
+    bars = ax.barh(list(rates.keys()), list(rates.values()),
+                   color=[GREEN if v >= 70 else ORANGE if v >= 40 else RED for v in rates.values()],
+                   edgecolor="white", height=0.5)
+    for bar, val in zip(bars, rates.values()):
+        ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2,
+                f"{val}%", va="center", fontsize=10, fontweight="bold")
+    ax.set_xlim(0, 115)
+    ax.set_xlabel("% of Compounds Passing", fontsize=11)
+    ax.set_title("Toxicity Safety Summary (pkCSM)", fontsize=12, fontweight="bold", color=BLUE)
+    ax.axvline(x=70, color=BLUE, linestyle="--", alpha=0.5, label="70% threshold")
     ax.legend(fontsize=9)
     plt.tight_layout()
-    out = os.path.join(output_dir, "qed_distribution.png")
-    plt.savefig(out, dpi=150, bbox_inches="tight")
+    out = os.path.join(output_dir, "toxicity_summary.png")
+    plt.savefig(out, dpi=200, bbox_inches="tight")
     plt.close()
-    log.info(f"QED distribution plot saved: {out}")
+    log.info(f"Toxicity summary saved: {out}")
 
 
-# ─────────────────────────────────────────────────────────────
-# ARGUMENT PARSING & ENTRY POINT
-# ─────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# REPORTING
+# ════════════════════════════════════════════════════════════
+
+def generate_report(df: pd.DataFrame, output_dir: str) -> None:
+    """Save full integrated results and a filtered drug-like hits table."""
+    all_path  = os.path.join(output_dir, "admet_integrated_full.csv")
+    pass_path = os.path.join(output_dir, "admet_drug_like_hits.csv")
+    df.to_csv(all_path, index=False)
+
+    if "Overall_Pass" in df.columns:
+        hits = df[df["Overall_Pass"] == True]
+    else:
+        hits = df
+
+    hits.to_csv(pass_path, index=False)
+
+    log.info(f"\n{'='*60}")
+    log.info(f"  ADMET ANALYSIS COMPLETE (pkCSM + SwissADME)")
+    log.info(f"{'='*60}")
+    log.info(f"  Total compounds analysed : {len(df)}")
+    log.info(f"  Drug-like hits (all pass): {len(hits)}")
+    log.info(f"  Full results CSV         : {all_path}")
+    log.info(f"  Filtered hits CSV        : {pass_path}")
+    log.info(f"{'='*60}\n")
+
+
+# ════════════════════════════════════════════════════════════
+# MAIN
+# ════════════════════════════════════════════════════════════
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="ADMET screening and drug-likeness filter for compound libraries",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Integrate pkCSM + SwissADME ADMET results",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("Requirements")[0]
     )
-    p.add_argument("--input",  required=True, help="Input SDF or SMILES file")
-    p.add_argument("--output", default="admet_results/", help="Output directory")
-    p.add_argument("--plot",   action="store_true", help="Generate visualisation plots")
+    p.add_argument("--pkcsm",      help="pkCSM batch CSV output")
+    p.add_argument("--swissadme",  help="SwissADME CSV output")
+    p.add_argument("--smiles",     help="SDF or SMILES file (to prepare server inputs)")
+    p.add_argument("--output",     default="admet_results/", help="Output directory")
+    p.add_argument("--plot",       action="store_true", help="Generate all plots")
+    p.add_argument("--prepare",    action="store_true",
+                   help="Prepare SMILES for server submission only (use with --smiles)")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    log.info("="*60)
-    log.info("  ADMET Screening Pipeline — Sana Begum")
-    log.info("="*60)
+    os.makedirs(args.output, exist_ok=True)
 
-    df = run_admet_screening(args.input, args.output)
+    log.info("=" * 60)
+    log.info("  ADMET Workflow: pkCSM + SwissADME  — Sana Begum")
+    log.info("=" * 60)
 
-    if df.empty:
-        log.error("No results generated.")
+    # Mode 1: Prepare inputs for web servers
+    if args.prepare:
+        if not args.smiles:
+            log.error("Provide --smiles <file.sdf> with --prepare")
+            sys.exit(1)
+        out_smi = os.path.join(args.output, "compounds_for_servers.smi")
+        prepare_smiles_from_sdf(args.smiles, out_smi)
+        log.info(f"\nNext steps:\n"
+                 f"  1. pkCSM  → https://biosig.lab.uq.edu.au/pkcsm/prediction\n"
+                 f"             Upload {out_smi} → Download CSV\n"
+                 f"  2. SwissADME → https://www.swissadme.ch/\n"
+                 f"             Paste SMILES list → Export CSV\n"
+                 f"  3. Re-run: python admet_pkcsm_swissadme.py "
+                 f"--pkcsm pkcsm.csv --swissadme swissadme.csv --output {args.output} --plot")
+        return
+
+    # Mode 2: Integrate results
+    if not args.pkcsm and not args.swissadme:
+        log.error("Provide at least one of --pkcsm or --swissadme CSV result files.")
+        log.info("Use --prepare to generate server input files from your SDF/SMILES first.")
         sys.exit(1)
 
-    if args.plot:
-        plot_chemical_space(df, args.output)
-        plot_qed_distribution(df, args.output)
+    dfs = []
+    pkcsm_df, swiss_df = pd.DataFrame(), pd.DataFrame()
+    if args.pkcsm:
+        pkcsm_df = parse_pkcsm(args.pkcsm)
+        dfs.append(pkcsm_df)
+    if args.swissadme:
+        swiss_df = parse_swissadme(args.swissadme)
+        dfs.append(swiss_df)
 
-    log.info(f"\nDone! Results saved to: {args.output}")
+    if pkcsm_df.empty and not swiss_df.empty:
+        merged = swiss_df
+    elif swiss_df.empty and not pkcsm_df.empty:
+        merged = pkcsm_df
+    else:
+        merged = integrate_admet(pkcsm_df, swiss_df)
+
+    merged = apply_drug_filters(merged)
+    generate_report(merged, args.output)
+
+    if args.plot:
+        plot_admet_heatmap(merged, args.output)
+        plot_bioavailability_radar(merged, args.output)
+        plot_toxicity_summary(merged, args.output)
+        log.info("All plots generated.")
 
 
 if __name__ == "__main__":
