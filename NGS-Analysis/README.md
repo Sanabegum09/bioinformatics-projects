@@ -1,58 +1,49 @@
-# 🧬 NGS Analysis — miRNA-seq Differential Expression
+# 🧬 NGS Analysis: Alzheimer's Disease Multi-Omics
 
-Complete **miRNA-seq** differential expression analysis pipeline using **DESeq2**. Currently applied to bladder cancer miRNA profiling (ongoing research, Era's Lucknow Medical College).
+**Author:** Sana Begum | Research Analyst, Era's Lucknow Medical College & Hospital  
+**Email:** begumsana686@gmail.com | **GitHub:** [@Sanabegum09](https://github.com/Sanabegum09)
 
-## Pipeline Steps
-1. Raw count matrix loading & sample QC
-2. Low-count pre-filtering (≥10 reads in ≥2 samples)
-3. DESeq2 normalisation + LFC shrinkage (apeglm)
-4. PCA & sample distance heatmap
-5. Volcano plot (EnhancedVolcano)
-6. MA plot
-7. Top DE miRNA heatmap (pheatmap)
-8. Export of ranked lists for GSEA / target prediction
+A comprehensive multi-type NGS analysis repository focussed on Alzheimer's disease,
+demonstrating expertise across RNA-seq, miRNA-seq, and DNA-seq/WES analysis.
 
-## Requirements
-```r
-install.packages(c("optparse","ggplot2","ggrepel","pheatmap","RColorBrewer",
-                   "dplyr","tidyr","tibble"))
-BiocManager::install(c("DESeq2","clusterProfiler","org.Hs.eg.db","EnhancedVolcano"))
+## Repository Structure
+```
+NGS-Analysis/
+├── README.md                         # This file
+├── Alzheimers-RNA-seq/
+│   ├── alzheimers_rnaseq_pipeline.R  # Full DESeq2 pipeline (GSE110226)
+│   └── README.md
+├── Alzheimers-miRNA-seq/
+│   ├── alzheimers_mirna_pipeline.R   # miRNA-seq DESeq2 pipeline (GSE46579)
+│   └── README.md
+└── Alzheimers-DNA-seq/
+    ├── alzheimers_dnaseq_pipeline.sh # GATK4 WES variant calling (ADNI)
+    ├── variant_annotation_analysis.R # ANNOVAR results + AD gene analysis
+    └── README.md
 ```
 
-## Quick Start
-```bash
-Rscript mirna_deseq2_analysis.R \
-    --counts count_matrix.csv \
-    --metadata metadata.csv \
-    --output results/ \
-    --condition Condition \
-    --reference Normal \
-    --padj 0.05 \
-    --lfc 1.0
-```
+## Datasets Used
+| Analysis | Dataset | Source | Access |
+|----------|---------|--------|--------|
+| RNA-seq | GSE110226 | NCBI GEO | Public |
+| miRNA-seq | GSE46579 | NCBI GEO | Public |
+| DNA-seq/WES | ADNI (phs000572) | dbGaP | Requires registration |
 
-## Input Format
-**count_matrix.csv** — rows = miRNA names, columns = sample IDs, values = raw read counts  
-**metadata.csv** — rows = sample IDs, must contain a column matching `--condition`
+## Key Alzheimer's Findings Targeted
+- **Transcriptomic:** Dysregulation of APOE, APP, PSEN1, TREM2, MAPT, BACE1
+- **miRNA:** Downregulation of miR-132, miR-107, miR-29 family; upregulation of miR-146a
+- **Genomic:** APOE ε4 (rs429358), TREM2 R47H (rs75932628), PSEN1/2 pathogenic variants
 
-## Output
-```
-results/
-├── QC/
-│   ├── pca_plot.pdf/.png
-│   └── sample_distance_heatmap.pdf
-├── DE/
-│   ├── deseq2_all_results.csv
-│   ├── deseq2_significant_miRNAs.csv
-│   ├── upregulated_miRNAs.txt
-│   ├── downregulated_miRNAs.txt
-│   └── ranked_mirnas_for_gsea.csv
-├── Plots/
-│   ├── volcano_plot.pdf/.png
-│   ├── ma_plot.pdf/.png
-│   └── top_mirna_heatmap.pdf
-└── session_info.txt
-```
+## Tools & Software
+### NGS
+`FastQC · MultiQC · fastp · BWA-MEM2 · Samtools · GATK4 · bcftools · ANNOVAR`
 
----
-**Author:** Sana Begum | Research Analyst, Era's Lucknow Medical College | [GitHub](https://github.com/Sanabegum09)
+### R/Bioconductor
+`GEOquery · DESeq2 · EnhancedVolcano · clusterProfiler · org.Hs.eg.db · pheatmap · ggplot2`
+
+## Common Databases Referenced
+- NCBI GEO: https://www.ncbi.nlm.nih.gov/geo/
+- ADNI: https://adni.loni.usc.edu/
+- ClinVar: https://www.ncbi.nlm.nih.gov/clinvar/
+- miRTarBase: https://mirtarbase.cuhk.edu.cn/
+- KEGG AD pathway: hsa05010
