@@ -1,68 +1,76 @@
-# Project 1 — Molecular Docking & Virtual Screening Pipeline
+# Molecular Docking using AutoDock
 
-## Overview
-
-This project presents a complete and reproducible Structure-Based Drug Discovery (SBDD) workflow for identifying potential lead compounds against therapeutic protein targets. The pipeline integrates protein preparation, ligand library generation, molecular docking, virtual screening, interaction analysis, and lead prioritization using AutoDock Vina, Discovery Studio Visualizer, and PyMOL.
-
-This workflow has been developed and validated through computational strategies applied in published research on phytochemical inhibitors against SARS-CoV-2 Main Protease and DNA methylotransferases (DNMTs) for head and neck cancer, demonstrating efficacy in identifying high-affinity lead compounds prior to molecular dynamics validation and MM-PBSA binding free-energy calculations.
+Molecular docking is a computational method used to predict the interaction between a receptor and a ligand by identifying the preferred binding mode and estimating binding affinity.
 
 ---
 
-## Workflow Architecture
+## Software Required
 
-```
-Target Protein (PDB) → Protein Preparation → Ligand Library → Energy Minimization 
-    ↓
-PDBQT Conversion → Grid Box Definition → AutoDock Vina Screening → Docking Ranking
-    ↓
-Protein–Ligand Interaction Analysis → Lead Prioritization → Publication-ready Output
-```
+- AutoDock 4
+- MGLTools
+- Open Babel
+- Discovery Studio Visualizer
 
 ---
 
-## Software & Tools
+## Receptor Preparation
 
-| Tool | Purpose |
-|------|---------|
-| **AutoDock Vina** | Molecular docking and virtual screening |
-| **AutoDock Tools (ADT)** | Protein and ligand PDBQT preparation |
-| **Discovery Studio Visualizer** | Protein-ligand interaction analysis |
-| **PyMOL** | Structure visualization and analysis |
-| **UCSF Chimera** | Protein preparation and refinement |
-| **Open Babel** | File format conversion and energy minimization |
-
----
-
-## Key Features
-
-✅ End-to-end molecular docking workflow  
-✅ Automated protein and ligand preparation  
-✅ High-throughput virtual screening capability  
-✅ Comprehensive protein-ligand interaction analysis  
-✅ Publication-quality visualization output  
-✅ Seamless integration with ADMET, MD, and MM-PBSA pipelines  
+- Open receptor structure (PDB format)
+- Remove water molecules
+- Remove hetero atoms/ligands
+- Check for missing atoms
+- Add polar hydrogens
+- Assign Kollman charges
+- Verify total charges
+- Save receptor as `receptor.pdbqt`
 
 ---
 
-## Applications
+## Ligand Preparation
 
-- Computer-Aided Drug Design (CADD)
-- Structure-Based Drug Discovery
-- Virtual Screening
-- Natural Product Screening
-- Antiviral Drug Discovery
-- Cancer Drug Discovery
-
----
-
-## Research Relevance
-
-Reflects validated methodologies from published drug discovery studies targeting SARS-CoV-2 Main Protease and DNA methyltransferase inhibitors for cancer therapy.
+- Open ligand structure
+- Detect root atom
+- Define torsion tree
+- Set rotatable bonds
+- Save ligand as `ligand.pdbqt`
 
 ---
 
-## Next Steps
+## Grid Parameter
 
-1. **Project 2** — ADMET Prediction Pipeline
-2. **Project 4** — Molecular Dynamics Simulation (GROMACS)
-3. **Project 5** — MM-PBSA Binding Free Energy Analysis
+- Load receptor
+- Select ligand map types
+- Define grid box dimensions
+- Save Grid Parameter File (`.gpf`)
+- Run AutoGrid
+
+---
+
+## Docking Parameters
+
+- Load receptor
+- Load ligand
+- Configure Lamarckian Genetic Algorithm
+- Set population size
+- Set number of runs
+- Save Docking Parameter File (`.dpf`)
+
+---
+
+## Molecular Docking
+
+- Run AutoDock
+- Load the Docking Parameter File (`.dpf`)
+- Execute docking
+
+---
+
+## Result Analysis
+
+- Open Docking Log File (`.dlg`)
+- Load receptor structure
+- Visualize docking conformations
+- Analyze interaction energy
+- Build hydrogen bonds
+- Save docked complex
+- Export interaction image
